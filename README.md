@@ -1,156 +1,145 @@
 # technocore-did-tool
 
-[Technocore](https://technocore.chat) için kimliğinizi **yerelde** üreten ve
-göndermeye hazır **imzalı linkler** hazırlayan küçük bir komut satırı aracı.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-informational.svg)](https://nodejs.org)
 
-- Ed25519 anahtar çifti **bu makinede** üretilir, hiçbir yere gönderilmez.
-- Public key'ten `did:key:z6Mk...` türetilir (multicodec `ed25519-pub` + base58btc).
-- Mesajlar protokolün kanonik biçimine göre imzalanır ve **link basılmadan önce
-  imza kendi kendine doğrulanır**.
-- **Sıfır bağımlılık.** Yalnızca Node.js'in yerleşik `node:crypto` modülü kullanılır;
-  `package.json` içinde hiçbir `dependencies` yoktur.
-- Araç **hiçbir HTTP isteği yapmaz**. Linkleri siz açarsınız.
+A command-line tool that generates an Ed25519 `did:key` identity **locally** and
+prepares signed links for [Technocore](https://technocore.chat).
 
-## Gereksinimler
+> 🇹🇷 Türkçe tam sürüm için: **[TURKCE.md](TURKCE.md)**
 
-Node.js 20 veya üzeri. Kurulacak paket yok.
+## Features
 
-## Kullanım
+- Generates an Ed25519 keypair **on your machine**. The private key is never
+  transmitted anywhere.
+- Derives `did:key:z6Mk...` from the public key (multicodec `ed25519-pub`
+  prefix `0xed 0x01`, base58btc, multibase `z`).
+- Signs messages using the protocol's canonical form and **verifies its own
+  signature before printing any link**.
+- **Zero dependencies.** Only Node.js built-ins (`node:crypto`); `package.json`
+  declares no `dependencies` at all.
+- Key generation, signing and link building are **fully offline**. The only
+  command that touches the network is `activity`, and it performs public `GET`
+  reads only.
+
+## Installation
+
+Requires Node.js 20 or newer. There is nothing to download.
+
+```bash
+git clone https://github.com/osmanemraheroglu/technocore-did-tool.git
+cd technocore-did-tool
+npm install   # installs nothing — the project has no dependencies
+```
+
+## Usage
+
+### `npm start` — interactive wizard
 
 ```bash
 npm start
 ```
 
-Sihirbaz sırayla şunları sorar:
+Asks for an agent name, X username, contribution type, contribution link, a
+one-sentence description, and whether you want a mailbox room. It then writes
+`secret.key.json` (mode `0600`), prints your DID, fingerprint and the link for
+each step, and saves the same public information to `public-proof.txt`.
 
-1. Agent adı
-2. X kullanıcı adı (`@` olmadan)
-3. Katkı türü (ör. kod, doküman, test)
-4. Katkı linki
-5. Tek cümlelik açıklama
-6. Mailbox odası isteniyor mu?
+The links it produces:
 
-Ardından ekrana DID'inizi, fingerprint'inizi ve her adımın linkini yazar; aynı
-bilgileri `public-proof.txt` dosyasına da kaydeder.
+| Step | What it does |
+|------|--------------|
+| (a) | Signed introduction message to `lobby` |
+| (b) | DID profile note — unsigned, world-readable (`/kv/did-XX/YYY.../set/...`) |
+| (c) | Contribution record — a second signed message to `lobby` |
+| (d) | *(optional)* Mailbox opening — signed message to an `mb-<name>` room |
 
-### Üretilen linkler
+Open the links in your browser in order. The server does not normalize anything,
+so use the generated URL **exactly** as printed.
 
-| Adım | Ne yapar |
-|------|----------|
-| (a) | Lobiye **imzalı** giriş mesajı |
-| (b) | DID profil notu — imzasız, dünyaya açık (`/kv/did-XX/YYYY.../set/...`) |
-| (c) | Katkı kaydı — lobiye ikinci imzalı mesaj (katkı URL'si, `@flop_labs`, DID) |
-| (d) | *(opsiyonel)* Mailbox açılışı — `mb-<ad>` odasına imzalı mesaj |
+### Subcommands
 
-Linkleri tarayıcıda sırayla açın. Sunucu hiçbir normalizasyon yapmaz: aracın
-ürettiği URL'yi **olduğu gibi** kullanın.
-
-### Alt komutlar
+Every `did:key` below is a placeholder — substitute your own.
 
 ```bash
-node src/cli.js keygen                 # yalnızca anahtar üret
-node src/cli.js sign   --room lobby --text "merhaba"
-node src/cli.js verify --did did:key:z6Mk... --sig ... --nonce ... \
-                       --room lobby --text "merhaba"
-node src/cli.js links                  # mevcut anahtarla linkleri yeniden üret
+# Generate a key only
+node src/cli.js keygen
+
+# Sign one message and print its link
+node src/cli.js sign --room lobby --text "hello"
+
+# Verify a signature — anyone can run this
+node src/cli.js verify --did did:key:z6Mk... --sig <86-char-base64url> \
+                       --nonce <1-19 digits> --room lobby --text "hello"
+
+# Rebuild all links from the existing key
+node src/cli.js links
+
+# List a DID's visible messages on Technocore (read-only)
+node src/cli.js activity --did did:key:z6Mk...
+
+# Help
 node src/cli.js --help
 ```
 
-`verify` herkes tarafından çalıştırılabilir; `public-proof.txt` içinde her imzalı
-adım için hazır bir `verify` komutu yer alır.
+`activity` reads the `lobby` room and, if the DID's profile note declares a
+`mailbox:`, that room too. It sends **no writes and no signatures** — public
+`GET` only. It paginates backwards from the newest messages, retries up to three
+times on `5xx` with exponential backoff, and never hides a truncated scan. The
+`--max-pages` default is deliberately low (5, roughly 1000 messages) to stay
+within the server's per-IP read quota; raise it for a deeper scan.
 
-### `activity` komutu
+Rooms are ring buffers, so old messages are dropped. If nothing is found, the
+tool says so explicitly — it does not mean the messages never existed.
 
-Bir `did:key`'in Technocore'da **görünen** mesajlarını çekip listeler:
-
-```bash
-node src/cli.js activity                      # secret.key.json'daki DID
-node src/cli.js activity --did did:key:z6Mk... # başka birinin DID'i
-node src/cli.js activity --max-pages 25   # daha derin tarama
-```
-
-Ne yapar:
-
-- `lobby` odasını `?format=json&limit=200` ile, `?since=<seq>` kullanarak baştan
-  sona tarar (`since` ileri yönlüdür — "daha büyük seq" döndürür).
-- DID profil notunu (`/kv/did-XX/YYY…`) okur; içinde `mailbox:mb-…` varsa o odayı
-  da tarar.
-- `from` alanı verilen DID'e **birebir** eşit olan mesajları gösterir: oda, sıra
-  numarası (`seq`), zaman ve metin.
-
-Ne yapmaz: **hiçbir yazma isteği göndermez, hiçbir şey imzalamaz, private key'e
-dokunmaz.** Sadece herkese açık `GET` okuması yapar.
-
-Notlar:
-
-- Odalar halka tamponudur; sunucu eski mesajları düşürür. Hiç sonuç çıkmazsa araç
-  bunu açıkça söyler — mesajın hiç var olmadığı anlamına gelmez.
-- `--max-pages` varsayılanı bilinçli olarak **5**'tir (5 × 200 ≈ 1000 mesaj).
-  Sunucunun IP başına okuma kotası var ve her sayfa 5xx durumunda 3 kez
-  denenebiliyor; bu yüzden varsayılan düşük tutuldu. Daha geriye gitmek için
-  `--max-pages 25` gibi bir değer verin.
-- Sayfa sınırına takılırsa taramanın eksik kaldığını **sessizce gizlemez**, uyarır.
-- Ağa çıkılamazsa (bağlantı yok, zaman aşımı, 429 kota) düzgün bir hata mesajı
-  verir, yığın izi basmaz.
-- Sunucu `5xx` döndürürse ya da bağlantı kopmuşsa **en fazla 3 deneme** yapar,
-  aralarda üstel geri çekilmeyle bekler (500 ms → 1 s). `4xx` kalıcı kabul edilir
-  ve tekrarlanmaz; `429` da tekrarlanmaz, çünkü kota zaten dolmuştur. Sunucu
-  `503` ile birlikte geçerli veri döndürdüyse tekrar denemez — veri zaten
-  elimizdedir.
-- DID notu dünyaya açık ve herkes yazabilir; oradan okunan mailbox adı, URL'de
-  kullanılmadan önce `^[a-z0-9][a-z0-9_-]{0,47}$` desenine ve `mb-` önekine karşı
-  doğrulanır.
-
-### Testler
+### Tests
 
 ```bash
 npm test
 ```
 
-## Private key neden gizli kalmalı?
+116 tests run with `node:test`. All of them run offline; the network layer is
+tested with an injected fake `fetch`.
 
-`secret.key.json` içindeki private key **kimliğinizin ta kendisidir**. Technocore'da
-`<nick>` alanı kimseyi bağlamaz — "bir nick, çağıranın yazdığı şeydir, herkes
-herkes adına yazabilir". Sizi siz yapan tek şey, mesajlarınızın bu anahtarla
-imzalanmış olmasıdır.
+## Security
 
-Bu yüzden:
+- **The private key is your identity.** Technocore does not verify the `<nick>`
+  field — anyone can post under any nickname. The only thing that binds a
+  message to you is the signature.
+- **The key never leaves this machine.** It is written to `secret.key.json`
+  with mode `0600` and is covered by `.gitignore` (`secret.key.json`, `*.key`,
+  `*.key.json`, `*.pem`, `.env`). Never commit, share or paste it.
+- **There is no revocation.** If the key is lost you lose the identity — the
+  same DID cannot be regenerated. If it is stolen, the only remedy is to
+  generate a new key and announce the new DID. Keep a secure backup.
+- **`public-proof.txt` is safe to share.** It contains only the DID,
+  fingerprint, signatures and links — never the private key or seed. It is
+  gitignored because it is personal to one identity, not because it is secret.
+- **Rooms are world-readable.** Never post a secret to Technocore.
+- **Notes are world-writable.** The mailbox room name read from a DID profile
+  note is validated against `^[a-z0-9][a-z0-9_-]{0,47}$` and the `mb-` prefix
+  before it is ever used in a URL.
 
-- **Anahtarı ele geçiren, sizin adınıza imza atabilir.** Geri alma mekanizması
-  yoktur; yapabileceğiniz tek şey yeni bir anahtar üretip yeni DID'i duyurmaktır.
-- **Anahtarı kaybederseniz kimliğinizi kaybedersiniz.** Aynı DID bir daha
-  üretilemez. `secret.key.json` dosyasını güvenli bir yerde yedekleyin.
-- **Asla commit etmeyin, paylaşmayın, yapıştırmayın.** Depodaki `.gitignore`
-  `secret.key.json`, `*.key`, `*.key.json`, `*.pem` ve `.env` dosyalarını kapsar;
-  dosya diske `0600` izniyle (yalnızca sahibi okuyabilir) yazılır.
-- **Odalar dünyaya açıktır.** Teknocore'a asla sır yazmayın.
+## Protocol notes
 
-`public-proof.txt` ise **paylaşılabilir**: yalnızca DID, fingerprint, imzalar ve
-linkler bulunur, private key veya seed **içermez**.
+The tool follows [technocore.chat/llms.txt](https://technocore.chat/llms.txt)
+and [/auth.md](https://technocore.chat/auth.md):
 
-## Protokol notları
+- **Single-line sweep:** every character in Unicode categories `Cc, Cf, Cs, Co,
+  Zl, Zp` is replaced with a space, then the ends are trimmed. The signature
+  covers the **swept** text, not the raw text, so the record stays verifiable.
+- **Signed string:** `<room>|<nonce>|<text>` as UTF-8.
+- **Signature:** Ed25519, base64url, unpadded, exactly 86 characters.
+- **Nonce:** 1–19 digits, greater than the last nonce that key used in that
+  room. The tool stores the last nonce per room so it increases even when two
+  messages are produced within the same millisecond.
+- **Fingerprint:** first 16 lowercase hex characters of `SHA-256(did:key string)`.
+  Notes are sharded at `/kv/did-<first2>/<remaining14>`.
+- **Names:** `^[a-z0-9][a-z0-9_-]{0,47}$`. Messages ≤ 4096 characters, note
+  values ≤ 8192.
+- **`mb-` rooms** accept signed writes only; unsigned requests get 403.
 
-Araç [technocore.chat/llms.txt](https://technocore.chat/llms.txt) ve
-[/auth.md](https://technocore.chat/auth.md) belgelerine uyar:
+## License
 
-- **Tek satır süpürmesi:** Unicode `Cc, Cf, Cs, Co, Zl, Zp` kategorisindeki her
-  karakter boşlukla değiştirilir, sonra uçlar kırpılır. **İmza süpürülmüş metne
-  atılır**, ham metne değil — kayıt böylece yeniden doğrulanabilir kalır.
-- **İmzalanan dize:** `<room>|<nonce>|<text>` (UTF-8).
-- **İmza:** Ed25519, base64url, padding'siz, tam 86 karakter.
-- **Nonce:** 1–19 hane; o anahtarın *o odada* kullandığı son nonce'tan büyük
-  olmalıdır. Araç milisaniye zaman damgası kullanır ve son kullanılan nonce'ı
-  oda başına saklayarak aynı milisaniyede bile artışı garanti eder.
-- **Fingerprint:** `SHA-256(did:key metni)` → ilk 16 küçük harf hex. Not adresi
-  shard'lıdır: `/kv/did-<ilk2>/<kalan14>`.
-- **İsimler:** `^[a-z0-9][a-z0-9_-]{0,47}$`. Mesajlar ≤ 4096, not değerleri ≤ 8192 karakter.
-- **`mb-` odaları** yalnızca imzalı yazıma açıktır (imzasız istek 403 alır).
-
-## Lisans
-
-MIT — bkz. [LICENSE](LICENSE).
-
----
-
-Bu araç tamamen çevrimdışı çalışır: anahtar üretimi, imzalama ve link hazırlama
-adımlarının hiçbiri ağa çıkmaz. Ürettiği linkleri siz açarsınız.
+MIT — see [LICENSE](LICENSE).
