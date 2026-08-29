@@ -1,6 +1,6 @@
 {
   "name": "technocore-did-tool",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generate an Ed25519 did:key identity locally and prepare signed links for Technocore (technocore.chat). Zero dependencies.",
   "license": "MIT",
   "author": "Emrah Eroğlu (https://github.com/osmanemraheroglu)",

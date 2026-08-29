@@ -42,12 +42,32 @@ const OPTIONS = {
   help: { type: 'boolean', short: 'h', default: false },
 };
 
-const HELP = `
+/**
+ * Yardim metninde komutun nasil yazilacagini belirler.
+ *
+ * Olculen davranis: global/npx kurulumda process.argv[1] bin baglantisinin
+ * yoludur (.../bin/technocore-did-tool), kaynaktan calistirinca .../src/cli.js
+ * olur. Uzantiya bakmak ikisini ayirmaya yeter ve kullanicinin yazdigi ismi
+ * ("technocore-did-tool" ya da kisa "technocore-did") oldugu gibi korur.
+ */
+function invocationName() {
+  const script = basename(process.argv[1] ?? '');
+  return script && !script.endsWith('.js') ? script : 'node src/cli.js';
+}
+
+function helpText() {
+  const cmd = invocationName();
+  const fromSource = cmd.startsWith('node ');
+  // Kaynaktan calistiranlar icin "npm start" en kisa yol; kurulu kullanici
+  // icin sihirbaz zaten argumansiz komutun kendisidir.
+  const wizard = fromSource ? 'npm start' : cmd;
+
+  return `
 technocore-did-tool - Technocore icin yerel did:key kimlik ve imzali link araci
 
 KULLANIM
-  npm start                      Sihirbaz: kimlik uret + tum linkleri hazirla
-  node src/cli.js <komut> [...]
+  ${wizard}${' '.repeat(Math.max(1, 31 - wizard.length))}Sihirbaz: kimlik uret + tum linkleri hazirla
+  ${cmd} <komut> [...]
 
 KOMUTLAR
   wizard          (varsayilan) Adim adim sorar, linkleri ve public-proof.txt uretir
@@ -78,13 +98,14 @@ SECENEKLER
                  Yalnizca herkese acik GET okumasi yapar; hicbir sey yazmaz.
 
 ORNEKLER
-  npm start
-  node src/cli.js sign --room lobby --text "merhaba"
-  node src/cli.js verify --did did:key:z6Mk... --sig ... --nonce 1756... \\
+  ${wizard}
+  ${cmd} sign --room lobby --text "merhaba"
+  ${cmd} verify --did did:key:z6Mk... --sig ... --nonce 1756... \\
        --room lobby --text "merhaba"
-  node src/cli.js activity
-  node src/cli.js activity --did did:key:z6Mk... --room lobby
+  ${cmd} activity
+  ${cmd} activity --did did:key:z6Mk... --room lobby
 `;
+}
 
 function fail(message) {
   process.stderr.write(`\nHATA: ${message}\n\n`);
@@ -464,13 +485,13 @@ async function main(argv) {
   try {
     parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
   } catch (err) {
-    fail(`${err.message}\n\n${HELP}`);
+    fail(`${err.message}\n\n${helpText()}`);
   }
   const { values, positionals } = parsed;
   const command = positionals[0] ?? 'wizard';
 
   if (values.help || command === 'help') {
-    process.stdout.write(HELP);
+    process.stdout.write(helpText());
     return;
   }
 
@@ -488,7 +509,7 @@ async function main(argv) {
     case 'activity':
       return cmdActivity(values);
     default:
-      fail(`bilinmeyen komut: ${command}\n${HELP}`);
+      fail(`bilinmeyen komut: ${command}\n${helpText()}`);
   }
 }
 
