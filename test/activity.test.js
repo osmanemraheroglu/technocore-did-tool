@@ -396,3 +396,229 @@ test('discoverMailbox hata sayfasindan oda adi uydurmaz', async () => {
   const { discoverMailbox } = await import('../src/activity.js');
   await assert.rejects(() => discoverMailbox(DID, { fetchImpl: f }), /sunucu 503 dondurdu/);
 });
+
+// --- yeniden deneme (ustel geri cekilme) ------------------------------------
+
+/**
+ * Sirayla verilen cevaplari donduren sahte fetch.
+ * @param {Array<{status?: number, body?: string} | Error>} responses
+ */
+function scriptedFetch(responses, log = []) {
+  let i = 0;
+  return async (url) => {
+    const entry = responses[Math.min(i, responses.length - 1)];
+    i++;
+    log.push(url);
+    if (entry instanceof Error) throw entry;
+    const status = entry.status ?? 200;
+    return { ok: status >= 200 && status < 300, status, text: async () => entry.body ?? '' };
+  };
+}
+
+/** Beklemeleri kaydeden, gercekte beklemeyen sleep. */
+function recordingSleep(delays = []) {
+  return async (ms) => {
+    delays.push(ms);
+  };
+}
+
+test('5xx sonrasi tekrar dener ve basarili cevabi kullanir', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch(
+    [
+      { status: 503, body: 'Service Unavailable' },
+      { status: 200, body: 'iyi' },
+    ],
+    log,
+  );
+  const res = await fetchRaw('https://x/a', { fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(res.status, 200);
+  assert.equal(res.body, 'iyi');
+  assert.equal(res.attempts, 2, 'ikinci denemede basarili olmali');
+  assert.equal(log.length, 2);
+});
+
+test('geri cekilme suresi ustel olarak artar', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const delays = [];
+  const f = scriptedFetch([{ status: 503, body: 'kotu' }]);
+  await fetchRaw('https://x/a', {
+    fetchImpl: f,
+    sleep: recordingSleep(delays),
+    backoffMs: 500,
+    retries: 3,
+  });
+  // 3 deneme -> aralarda 2 bekleme: 500ms ve 1000ms.
+  assert.deepEqual(delays, [500, 1000]);
+});
+
+test('en fazla 3 deneme yapilir', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch([{ status: 503, body: 'kotu' }], log);
+  const res = await fetchRaw('https://x/a', { fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(log.length, 3, 'ucten fazla istek atilmamali');
+  assert.equal(res.status, 503);
+  assert.equal(res.attempts, 3);
+});
+
+test('4xx KALICI kabul edilir, tekrar denenmez', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  for (const status of [400, 403, 404, 422]) {
+    const log = [];
+    const f = scriptedFetch([{ status, body: 'hayir' }], log);
+    const res = await fetchRaw('https://x/a', { fetchImpl: f, sleep: recordingSleep() });
+    assert.equal(log.length, 1, `${status} icin tekrar denenmemeli`);
+    assert.equal(res.attempts, 1);
+  }
+});
+
+test('429 da tekrar denenmez (kota zaten dolu)', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch([{ status: 429, body: '' }], log);
+  await fetchRaw('https://x/a', { fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(log.length, 1, 'kota dolmusken tekrar denemek durumu kotulestirirdi');
+});
+
+test('ag hatasindan sonra toparlanir', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch([new TypeError('fetch failed'), { status: 200, body: 'iyi' }], log);
+  const res = await fetchRaw('https://x/a', { fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(res.body, 'iyi');
+  assert.equal(res.attempts, 2);
+});
+
+test('tum denemeler ag hatasiyla biterse duzgun hata verir (cokmez)', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch([new TypeError('fetch failed')], log);
+  await assert.rejects(
+    () => fetchRaw('https://x/a', { fetchImpl: f, sleep: recordingSleep() }),
+    (err) => {
+      assert.ok(err instanceof NetworkError);
+      assert.match(err.message, /sunucuya ulasilamadi/);
+      assert.match(err.message, /3 deneme/);
+      return true;
+    },
+  );
+  assert.equal(log.length, 3);
+});
+
+test('retries=1 ile yeniden deneme kapatilabilir', async () => {
+  const { fetchRaw } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch([{ status: 503, body: 'kotu' }], log);
+  await fetchRaw('https://x/a', { fetchImpl: f, retries: 1, sleep: recordingSleep() });
+  assert.equal(log.length, 1);
+});
+
+test('503 + GECERLI govde tekrar denenmez, veri kullanilir', async () => {
+  const { fetchFeedPage } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch(
+    [{ status: 503, body: feed('lobby', [{ seq: 1, from: DID, text: 'yasiyorum' }], 1) }],
+    log,
+  );
+  const page = await fetchFeedPage('lobby', { fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(log.length, 1, 'veri zaten elimizdeyken tekrar istek atmak bosuna');
+  assert.equal(page.messages.length, 1);
+  assert.equal(page.degradedStatus, 503);
+});
+
+test('503 + BOZUK govde tekrar denenir, sonra duzelir', async () => {
+  const { fetchFeedPage } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch(
+    [
+      { status: 503, body: '<html>Service Unavailable</html>' },
+      { status: 200, body: feed('lobby', [{ seq: 2, from: DID, text: 'sonunda' }], 2) },
+    ],
+    log,
+  );
+  const page = await fetchFeedPage('lobby', { fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(log.length, 2);
+  assert.equal(page.messages[0].text, 'sonunda');
+  assert.equal(page.degradedStatus, null, 'basarili cevapta bozuk durum yok');
+});
+
+test('surekli 503 + bozuk govde: deneme sayisiyla birlikte bildirilir', async () => {
+  const { fetchFeedPage } = await import('../src/activity.js');
+  const f = scriptedFetch([{ status: 503, body: 'Service Unavailable' }]);
+  await assert.rejects(
+    () => fetchFeedPage('lobby', { fetchImpl: f, sleep: recordingSleep() }),
+    /sunucu 503 dondurdu \(3 deneme\)/,
+  );
+});
+
+test('discoverMailbox 503 + gecerli not icin tekrar denemez', async () => {
+  const { discoverMailbox } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch([{ status: 503, body: `${DID} mailbox:mb-emrahfc` }], log);
+  assert.equal(await discoverMailbox(DID, { fetchImpl: f, sleep: recordingSleep() }), 'mb-emrahfc');
+  assert.equal(log.length, 1);
+});
+
+test('discoverMailbox 503 + bozuk govde icin tekrar dener', async () => {
+  const { discoverMailbox } = await import('../src/activity.js');
+  const log = [];
+  const f = scriptedFetch(
+    [{ status: 503, body: 'Service Unavailable' }, { status: 200, body: `${DID} mailbox:mb-x` }],
+    log,
+  );
+  assert.equal(await discoverMailbox(DID, { fetchImpl: f, sleep: recordingSleep() }), 'mb-x');
+  assert.equal(log.length, 2);
+});
+
+test('collectActivity dalgali sunucuda calismaya devam eder', async () => {
+  // Gercek dunyayi taklit eder: technocore.chat araliksiz 503/200 arasinda gidip geliyor.
+  let n = 0;
+  const f = async (url) => {
+    n++;
+    const kotu = n % 2 === 1; // her ikincisinde basarili
+    if (url.includes('/kv/')) {
+      return kotu
+        ? { ok: false, status: 503, text: async () => 'Service Unavailable' }
+        : { ok: true, status: 200, text: async () => `${DID} mailbox:mb-emrahfc` };
+    }
+    const room = url.includes('mb-emrahfc') ? 'mb-emrahfc' : 'lobby';
+    return kotu
+      ? { ok: false, status: 503, text: async () => 'Service Unavailable' }
+      : {
+          ok: true,
+          status: 200,
+          text: async () => feed(room, [{ seq: 1, from: DID, text: room }], 1),
+        };
+  };
+  const report = await collectActivity({ did: DID, fetchImpl: f, sleep: recordingSleep() });
+  assert.equal(report.mailbox, 'mb-emrahfc');
+  assert.equal(report.total, 2, 'yeniden deneme sayesinde iki oda da okunmali');
+  assert.ok(report.rooms.every((r) => r.error === null));
+});
+
+// --- varsayilan sayfa siniri ------------------------------------------------
+
+test('varsayilan --max-pages muhafazakar (5) ve okuma kotasini zorlamaz', async () => {
+  const { DEFAULT_MAX_PAGES } = await import('../src/activity.js');
+  assert.equal(DEFAULT_MAX_PAGES, 5);
+
+  const log = [];
+  // Cok buyuk bir oda: varsayilan sinir devreye girmeli.
+  await readRoom('lobby', { fetchImpl: fakeRoom(1_000_000, {}, log), limit: 200 });
+  assert.equal(log.length, DEFAULT_MAX_PAGES, 'varsayilan sinirdan fazla istek atilmamali');
+});
+
+test('tam biten tarama "kesildi" diye isaretlenmez', async () => {
+  // Oda tam olarak sinir kadar sayfaya sigiyor: dogal bitis, kesinti degil.
+  const result = await readRoom('lobby', { fetchImpl: fakeRoom(1000), limit: 200, maxPages: 5 });
+  assert.equal(result.messages.length, 1000);
+  assert.equal(result.truncated, false, 'odanin basina ulasildi, kesinti yok');
+});
+
+test('sinira takilan tarama kesildi olarak isaretlenir', async () => {
+  const result = await readRoom('lobby', { fetchImpl: fakeRoom(5000), limit: 200, maxPages: 5 });
+  assert.equal(result.messages.length, 1000);
+  assert.equal(result.truncated, true, 'oda bitmedi, kesinti bildirilmeli');
+});

@@ -73,6 +73,8 @@ SECENEKLER
 
   activity icin: [--did <did>] [--room <oda>] [--max-pages <n>]
                  --did verilmezse secret.key.json'daki DID kullanilir.
+                 --max-pages varsayilan 5 (~1000 mesaj); okuma kotasini
+                 zorlamamak icin dusuk tutuldu, derin tarama icin artirin.
                  Yalnizca herkese acik GET okumasi yapar; hicbir sey yazmaz.
 
 ORNEKLER

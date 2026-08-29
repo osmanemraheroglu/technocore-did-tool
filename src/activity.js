@@ -14,8 +14,13 @@ import { NAME_PATTERN, assertName } from './links.js';
 
 export const DEFAULT_BASE = 'https://technocore.chat';
 export const PAGE_LIMIT = 200; // sunucunun izin verdigi en buyuk dilim
-export const DEFAULT_MAX_PAGES = 25; // ~5000 mesaj; okuma kotasini tuketmemek icin
+// Muhafazakar varsayilan: 5 sayfa x 200 = ~1000 mesaj.
+// Sunucunun IP basina okuma kotasi var ve her sayfa 3 denemeye kadar
+// tekrarlanabiliyor; derin tarama isteyen --max-pages ile yukseltir.
+export const DEFAULT_MAX_PAGES = 5;
 export const DEFAULT_TIMEOUT_MS = 10_000;
+export const DEFAULT_RETRIES = 3; // toplam deneme sayisi (ilk istek dahil)
+export const DEFAULT_BACKOFF_MS = 500; // 500ms -> 1s -> 2s ustel geri cekilme
 
 /** Ag hatalarini CLI'da yigin izi basmadan sunabilmek icin ayri tur. */
 export class NetworkError extends Error {
@@ -131,42 +136,96 @@ export function formatMessage(message, { room }) {
 
 // --- ag (yalnizca GET) ------------------------------------------------------
 
+/** Ustel geri cekilme beklemesi; testlerde enjekte edilebilir. */
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Govde gecerli bir oda beslemesi mi? (503 + saglam veri durumunu ayirt eder) */
+export function isParsableFeed(body) {
+  try {
+    parseFeed(JSON.parse(body));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Tek bir GET istegi; ham sonucu dondurur (durum + govde).
  *
  * Govdeyi durum kodundan BAGIMSIZ olarak dondurur, cunku technocore.chat
- * asiri yuk altinda 503 ile birlikte gecerli JSON servis edebiliyor. Kullanilabilir
- * veriyi atmak yerine cagirana birakip durumu kullaniciya bildiriyoruz.
+ * asiri yuk altinda 503 ile birlikte gecerli JSON servis edebiliyor.
+ *
+ * Yeniden deneme: yalnizca 5xx ve ag hatalarinda, ustel geri cekilmeyle.
+ * 4xx KALICI kabul edilir ve asla tekrarlanmaz - istek bicimi yanlistir,
+ * tekrar etmek yalnizca okuma kotasini tuketir.
+ *
+ * `shouldRetry(sonuc)` verilirse 5xx karari ona birakilir; fetchFeedPage bunu
+ * "govde zaten gecerli veri tasiyorsa tekrar deneme" demek icin kullanir.
  */
 export async function fetchRaw(
   url,
-  { timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl = globalThis.fetch } = {},
+  {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    fetchImpl = globalThis.fetch,
+    retries = DEFAULT_RETRIES,
+    backoffMs = DEFAULT_BACKOFF_MS,
+    shouldRetry,
+    sleep = defaultSleep,
+  } = {},
 ) {
   if (typeof fetchImpl !== 'function') {
     throw new NetworkError('bu Node surumunde fetch bulunamadi (Node 20+ gerekir)');
   }
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      method: 'GET',
-      headers: { accept: 'application/json, text/plain' },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    const reason =
-      err?.name === 'TimeoutError' || err?.name === 'AbortError'
-        ? `sunucu ${timeoutMs} ms icinde yanit vermedi`
-        : 'sunucuya ulasilamadi (baglanti yok veya DNS hatasi)';
-    throw new NetworkError(`${reason}: ${url}`, { cause: err });
+
+  const attempts = Math.max(1, retries);
+  let lastError = null;
+  let lastResult = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) {
+      // 500ms, 1s, 2s ...
+      await sleep(backoffMs * 2 ** (attempt - 2));
+    }
+
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'GET',
+        headers: { accept: 'application/json, text/plain' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      // Ag hatasi ve zaman asimi gecici kabul edilir: tekrar denenir.
+      lastError = err;
+      lastResult = null;
+      continue;
+    }
+
+    let body = '';
+    try {
+      body = await response.text();
+    } catch {
+      body = '';
+    }
+
+    const result = { ok: response.ok, status: response.status, body, url, attempts: attempt };
+    lastResult = result;
+    lastError = null;
+
+    if (result.ok) return result;
+    if (result.status < 500) return result; // 4xx kalicidir, tekrar yok
+
+    // 5xx: cagiran taraf "govde zaten kullanilabilir" diyebilir.
+    const retryable = shouldRetry ? shouldRetry(result) : true;
+    if (!retryable) return result;
   }
 
-  let body = '';
-  try {
-    body = await response.text();
-  } catch {
-    body = '';
-  }
-  return { ok: response.ok, status: response.status, body, url };
+  if (lastResult) return lastResult; // tum denemeler 5xx ile bitti
+  const reason =
+    lastError?.name === 'TimeoutError' || lastError?.name === 'AbortError'
+      ? `sunucu ${timeoutMs} ms icinde yanit vermedi`
+      : 'sunucuya ulasilamadi (baglanti yok veya DNS hatasi)';
+  throw new NetworkError(`${reason} (${attempts} deneme): ${url}`, { cause: lastError });
 }
 
 /** Govdesi onemsenmeyen okumalar icin: hata durumunda firlatir. */
@@ -191,7 +250,11 @@ export async function fetchText(url, { allow404 = false, ...rest } = {}) {
  * (503) gecerli veri dondurebiliyor. Ayristirilamazsa HTTP hatasi bildirilir.
  */
 export async function fetchFeedPage(room, { since, limit, base, ...rest } = {}) {
-  const res = await fetchRaw(feedUrl(room, { since, limit, base }), rest);
+  const res = await fetchRaw(feedUrl(room, { since, limit, base }), {
+    ...rest,
+    // 503 + gecerli JSON geldiyse veri elimizde: tekrar denemek bosuna.
+    shouldRetry: (r) => !isParsableFeed(r.body),
+  });
   if (res.status === 429) {
     throw new NetworkError('okuma kotasi doldu (429) - biraz bekleyip tekrar deneyin', {
       status: 429,
@@ -202,10 +265,10 @@ export async function fetchFeedPage(room, { since, limit, base, ...rest } = {}) 
     payload = JSON.parse(res.body);
   } catch (err) {
     if (!res.ok) {
-      throw new NetworkError(`sunucu ${res.status} dondurdu: ${res.url}`, {
-        status: res.status,
-        cause: err,
-      });
+      throw new NetworkError(
+        `sunucu ${res.status} dondurdu (${res.attempts} deneme): ${res.url}`,
+        { status: res.status, cause: err },
+      );
     }
     throw new NetworkError(`${room}: sunucu gecerli JSON dondurmedi`, { cause: err });
   }
@@ -239,6 +302,11 @@ export async function readRoom(room, { maxPages = DEFAULT_MAX_PAGES, limit = PAG
   let degradedStatus = null;
 
   for (;;) {
+    // Once dogal bitis: odanin basina ulastiysak tarama TAMAMLANMISTIR.
+    // Bu kontrol sayfa sinirindan once gelmeli, yoksa tam biten bir tarama
+    // yanlislikla "kesildi" diye isaretlenir.
+    if (earliest !== null && earliest <= 1) break;
+
     if (pages >= maxPages) {
       truncated = true;
       break;
@@ -247,7 +315,6 @@ export async function readRoom(room, { maxPages = DEFAULT_MAX_PAGES, limit = PAG
     // Ilk sayfa: since yok -> sunucu en yeni dilimi verir.
     // Sonraki sayfalar: simdiye kadarki en eski seq'ten onceki pencere.
     const since = earliest === null ? undefined : Math.max(0, earliest - limit - 1);
-    if (earliest !== null && earliest <= 1) break; // odanin basina ulasildi
 
     const page = await fetchFeedPage(room, { since, limit, ...rest });
     pages++;
@@ -285,12 +352,17 @@ export async function readRoom(room, { maxPages = DEFAULT_MAX_PAGES, limit = PAG
  * yaptigi icin bir hata sayfasindan yanlislikla oda adi cikmaz.
  */
 export async function discoverMailbox(did, { base = DEFAULT_BASE, ...rest } = {}) {
-  const res = await fetchRaw(noteUrl(did, { base }), rest);
+  const res = await fetchRaw(noteUrl(did, { base }), {
+    ...rest,
+    shouldRetry: (r) => extractMailbox(r.body) === null,
+  });
   if (res.status === 404) return null;
   const mailbox = extractMailbox(res.body);
   if (mailbox) return mailbox;
   if (!res.ok) {
-    throw new NetworkError(`sunucu ${res.status} dondurdu: ${res.url}`, { status: res.status });
+    throw new NetworkError(`sunucu ${res.status} dondurdu (${res.attempts} deneme): ${res.url}`, {
+      status: res.status,
+    });
   }
   return null;
 }

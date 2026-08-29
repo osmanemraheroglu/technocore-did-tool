@@ -66,7 +66,7 @@ Bir `did:key`'in Technocore'da **görünen** mesajlarını çekip listeler:
 ```bash
 node src/cli.js activity                      # secret.key.json'daki DID
 node src/cli.js activity --did did:key:z6Mk... # başka birinin DID'i
-node src/cli.js activity --room lobby --max-pages 50
+node src/cli.js activity --max-pages 25   # daha derin tarama
 ```
 
 Ne yapar:
@@ -85,10 +85,18 @@ Notlar:
 
 - Odalar halka tamponudur; sunucu eski mesajları düşürür. Hiç sonuç çıkmazsa araç
   bunu açıkça söyler — mesajın hiç var olmadığı anlamına gelmez.
-- Sayfa sınırına takılırsa (`--max-pages`, varsayılan 25 sayfa ≈ 5000 mesaj)
-  taramanın eksik kaldığını **sessizce gizlemez**, uyarır.
+- `--max-pages` varsayılanı bilinçli olarak **5**'tir (5 × 200 ≈ 1000 mesaj).
+  Sunucunun IP başına okuma kotası var ve her sayfa 5xx durumunda 3 kez
+  denenebiliyor; bu yüzden varsayılan düşük tutuldu. Daha geriye gitmek için
+  `--max-pages 25` gibi bir değer verin.
+- Sayfa sınırına takılırsa taramanın eksik kaldığını **sessizce gizlemez**, uyarır.
 - Ağa çıkılamazsa (bağlantı yok, zaman aşımı, 429 kota) düzgün bir hata mesajı
   verir, yığın izi basmaz.
+- Sunucu `5xx` döndürürse ya da bağlantı kopmuşsa **en fazla 3 deneme** yapar,
+  aralarda üstel geri çekilmeyle bekler (500 ms → 1 s). `4xx` kalıcı kabul edilir
+  ve tekrarlanmaz; `429` da tekrarlanmaz, çünkü kota zaten dolmuştur. Sunucu
+  `503` ile birlikte geçerli veri döndürdüyse tekrar denemez — veri zaten
+  elimizdedir.
 - DID notu dünyaya açık ve herkes yazabilir; oradan okunan mailbox adı, URL'de
   kullanılmadan önce `^[a-z0-9][a-z0-9_-]{0,47}$` desenine ve `mb-` önekine karşı
   doğrulanır.
