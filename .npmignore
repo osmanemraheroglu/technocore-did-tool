@@ -9,6 +9,7 @@ secret.key.json
 *.pem
 .env
 .env.*
+.npmrc
 public-proof.txt
 
 # --- pakete gereksiz ---

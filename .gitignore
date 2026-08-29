@@ -5,6 +5,8 @@ secret.key.json
 *.pem
 .env
 .env.*
+# npm auth token'i burada tutulur; sizarsa npm hesabi ele gecer.
+.npmrc
 
 # --- Yerel ---
 node_modules/
