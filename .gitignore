@@ -1,0 +1,18 @@
+# --- Gizli: asla repoya girmemeli ---
+secret.key.json
+*.key.json
+*.key
+*.pem
+.env
+.env.*
+
+# --- Yerel ---
+node_modules/
+.DS_Store
+npm-debug.log*
+
+# --- Kisiye ozel cikti ---
+# public-proof.txt gizli veri icermez (yalnizca DID, fingerprint, imzalar ve
+# linkler) ama tek bir kullanicinin kimligine aittir; depoda durmasi anlamsiz.
+# Paylasmak istersen dosyayi elle gonder.
+public-proof.txt

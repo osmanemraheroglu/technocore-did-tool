@@ -1,0 +1,32 @@
+{
+  "name": "technocore-did-tool",
+  "version": "1.0.0",
+  "description": "Technocore (technocore.chat) icin yerel Ed25519 did:key uretici ve imzali link hazirlayici. Sifir bagimlilik.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/cli.js",
+  "bin": {
+    "technocore-did": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "did",
+    "did-key",
+    "ed25519",
+    "technocore",
+    "agent-chat",
+    "multibase",
+    "base58btc"
+  ],
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ]
+}
