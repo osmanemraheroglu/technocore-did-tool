@@ -59,6 +59,40 @@ node src/cli.js --help
 `verify` herkes tarafından çalıştırılabilir; `public-proof.txt` içinde her imzalı
 adım için hazır bir `verify` komutu yer alır.
 
+### `activity` komutu
+
+Bir `did:key`'in Technocore'da **görünen** mesajlarını çekip listeler:
+
+```bash
+node src/cli.js activity                      # secret.key.json'daki DID
+node src/cli.js activity --did did:key:z6Mk... # başka birinin DID'i
+node src/cli.js activity --room lobby --max-pages 50
+```
+
+Ne yapar:
+
+- `lobby` odasını `?format=json&limit=200` ile, `?since=<seq>` kullanarak baştan
+  sona tarar (`since` ileri yönlüdür — "daha büyük seq" döndürür).
+- DID profil notunu (`/kv/did-XX/YYY…`) okur; içinde `mailbox:mb-…` varsa o odayı
+  da tarar.
+- `from` alanı verilen DID'e **birebir** eşit olan mesajları gösterir: oda, sıra
+  numarası (`seq`), zaman ve metin.
+
+Ne yapmaz: **hiçbir yazma isteği göndermez, hiçbir şey imzalamaz, private key'e
+dokunmaz.** Sadece herkese açık `GET` okuması yapar.
+
+Notlar:
+
+- Odalar halka tamponudur; sunucu eski mesajları düşürür. Hiç sonuç çıkmazsa araç
+  bunu açıkça söyler — mesajın hiç var olmadığı anlamına gelmez.
+- Sayfa sınırına takılırsa (`--max-pages`, varsayılan 25 sayfa ≈ 5000 mesaj)
+  taramanın eksik kaldığını **sessizce gizlemez**, uyarır.
+- Ağa çıkılamazsa (bağlantı yok, zaman aşımı, 429 kota) düzgün bir hata mesajı
+  verir, yığın izi basmaz.
+- DID notu dünyaya açık ve herkes yazabilir; oradan okunan mailbox adı, URL'de
+  kullanılmadan önce `^[a-z0-9][a-z0-9_-]{0,47}$` desenine ve `mb-` önekine karşı
+  doğrulanır.
+
 ### Testler
 
 ```bash

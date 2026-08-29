@@ -18,6 +18,7 @@ import { buildPlan, normalizeMailboxRoom, normalizeUrl, normalizeXHandle } from 
 import { canonical, signMessage, verifyMessage } from './sign.js';
 import { assertName, roomUrl, saySignedUrl, slugify } from './links.js';
 import { createPrompter } from './prompt.js';
+import { NetworkError, collectActivity, formatMessage } from './activity.js';
 import { sweep } from './sweep.js';
 
 const OPTIONS = {
@@ -36,6 +37,8 @@ const OPTIONS = {
   did: { type: 'string' },
   sig: { type: 'string' },
   nonce: { type: 'string' },
+  'max-pages': { type: 'string' },
+  offline: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
 };
 
@@ -52,6 +55,7 @@ KOMUTLAR
   sign            Tek bir mesaji imzalar ve linkini basar
   verify          Verilen imzayi bagimsiz olarak dogrular
   links           Mevcut anahtarla linkleri yeniden uretir
+  activity        Bir did:key'in Technocore'da gorunen mesajlarini listeler
   help            Bu yardim
 
 SECENEKLER
@@ -67,11 +71,17 @@ SECENEKLER
   sign icin:    --room <oda> --text "<metin>"
   verify icin:  --did <did> --sig <imza> --nonce <n> --room <oda> --text "<metin>"
 
+  activity icin: [--did <did>] [--room <oda>] [--max-pages <n>]
+                 --did verilmezse secret.key.json'daki DID kullanilir.
+                 Yalnizca herkese acik GET okumasi yapar; hicbir sey yazmaz.
+
 ORNEKLER
   npm start
   node src/cli.js sign --room lobby --text "merhaba"
   node src/cli.js verify --did did:key:z6Mk... --sig ... --nonce 1756... \\
        --room lobby --text "merhaba"
+  node src/cli.js activity
+  node src/cli.js activity --did did:key:z6Mk... --room lobby
 `;
 
 function fail(message) {
@@ -348,6 +358,103 @@ function cmdVerify(values) {
   if (!ok) process.exit(2);
 }
 
+/**
+ * Bir DID'in gorunur etkinligini listeler.
+ *
+ * Yalnizca herkese acik GET okumasi yapar: imza atmaz, yazmaz, gizli veri
+ * gondermez. --did verilmezse yerel anahtar dosyasindaki DID kullanilir.
+ */
+async function cmdActivity(values) {
+  let did = values.did;
+  if (!did) {
+    const keyfile = resolve(values.keyfile ?? keystore.DEFAULT_KEYFILE);
+    if (!keystore.exists(keyfile)) {
+      fail(`--did verilmedi ve anahtar dosyasi da yok: ${keyfile}\n` +
+           'Ya --did <did:key:...> gecin ya da once "keygen" calistirin.');
+    }
+    did = keystore.load(keyfile).did;
+    process.stdout.write(`DID anahtar dosyasindan alindi: ${keyfile}\n`);
+  }
+  if (!did.startsWith('did:key:z6Mk')) {
+    fail(`gecersiz did: "did:key:z6Mk..." bekleniyor (alinan: ${did})`);
+  }
+
+  const rooms = values.room ? [assertName(values.room, 'oda adi')] : ['lobby'];
+  const maxPages = values['max-pages'] ? Number.parseInt(values['max-pages'], 10) : undefined;
+  if (maxPages !== undefined && (!Number.isInteger(maxPages) || maxPages < 1)) {
+    fail('--max-pages pozitif bir tamsayi olmali');
+  }
+
+  process.stdout.write(`\n${line('=')}\nETKINLIK\n${line('=')}\n`);
+  process.stdout.write(`DID    : ${did}\n`);
+  process.stdout.write(`Odalar : ${rooms.join(', ')}${rooms.includes('lobby') ? ' (+ varsa mailbox)' : ''}\n`);
+  process.stdout.write('Kaynak : technocore.chat (yalnizca okuma)\n');
+
+  let report;
+  try {
+    report = await collectActivity({ did, rooms, maxPages });
+  } catch (err) {
+    if (err instanceof NetworkError) fail(err.message);
+    throw err;
+  }
+
+  if (report.mailbox) {
+    process.stdout.write(`Mailbox: ${report.mailbox} (DID notundan bulundu)\n`);
+  } else if (report.mailboxError) {
+    process.stdout.write(`Mailbox: okunamadi - ${report.mailboxError}\n`);
+  }
+
+  let scannedTotal = 0;
+  let truncatedAny = false;
+  let degradedStatus = null;
+  let okRooms = 0;
+  for (const room of report.rooms) {
+    process.stdout.write(`\n${line()}\n${room.room}\n${line()}\n`);
+    if (room.error) {
+      process.stdout.write(`  okunamadi: ${room.error}\n`);
+      continue;
+    }
+    okRooms++;
+    scannedTotal += room.scanned;
+    truncatedAny = truncatedAny || room.truncated;
+    degradedStatus = degradedStatus ?? room.degradedStatus;
+    process.stdout.write(`  ${room.scanned} mesaj tarandi, ${room.matched.length} eslesme\n`);
+    if (room.truncated) {
+      process.stdout.write('  UYARI: sayfa siniri doldu, oda tamamen taranamadi (--max-pages ile artirin)\n');
+    }
+    if (room.matched.length > 0) process.stdout.write('\n');
+    for (const message of room.matched) {
+      process.stdout.write(`${formatMessage(message, { room: room.room })}\n\n`);
+    }
+  }
+
+  process.stdout.write(`${line('=')}\n`);
+  if (degradedStatus) {
+    process.stdout.write(
+      `NOT: sunucu HTTP ${degradedStatus} bildirdi ama gecerli veri dondurdu; ` +
+        'sonuclar eksik olabilir.\n',
+    );
+  }
+  if (okRooms === 0) {
+    // Hicbir oda okunamadi: bunu "mesaj yok" gibi sunmak yaniltici olurdu.
+    process.stdout.write(
+      'Hicbir oda okunamadi - yukaridaki hatalara bakin. Bu, DID in mesaji ' +
+        'olmadigi anlamina GELMEZ.\n',
+    );
+  } else if (report.total === 0) {
+    process.stdout.write(
+      `Bu DID icin gorunur mesaj bulunamadi (${scannedTotal} mesaj tarandi).\n` +
+        'Sunucu her odada yalnizca son N mesaji tutar - eski mesajlar dusmus olabilir.\n',
+    );
+    if (truncatedAny) {
+      process.stdout.write('Ayrica sayfa siniri nedeniyle odanin tamami taranmadi.\n');
+    }
+  } else {
+    process.stdout.write(`Toplam ${report.total} mesaj bulundu (${scannedTotal} mesaj tarandi).\n`);
+  }
+  process.stdout.write('\n');
+}
+
 // --- giris noktasi -----------------------------------------------------------
 
 async function main(argv) {
@@ -376,6 +483,8 @@ async function main(argv) {
       return cmdSign(values);
     case 'verify':
       return cmdVerify(values);
+    case 'activity':
+      return cmdActivity(values);
     default:
       fail(`bilinmeyen komut: ${command}\n${HELP}`);
   }
