@@ -1,11 +1,13 @@
 {
   "name": "technocore-did-tool",
-  "version": "1.0.0",
-  "description": "Technocore (technocore.chat) icin yerel Ed25519 did:key uretici ve imzali link hazirlayici. Sifir bagimlilik.",
+  "version": "0.1.0",
+  "description": "Generate an Ed25519 did:key identity locally and prepare signed links for Technocore (technocore.chat). Zero dependencies.",
   "license": "MIT",
+  "author": "Emrah Eroğlu (https://github.com/osmanemraheroglu)",
   "type": "module",
   "main": "src/cli.js",
   "bin": {
+    "technocore-did-tool": "src/cli.js",
     "technocore-did": "src/cli.js"
   },
   "engines": {
@@ -22,11 +24,22 @@
     "technocore",
     "agent-chat",
     "multibase",
-    "base58btc"
+    "base58btc",
+    "signing",
+    "cli"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/osmanemraheroglu/technocore-did-tool.git"
+  },
+  "bugs": {
+    "url": "https://github.com/osmanemraheroglu/technocore-did-tool/issues"
+  },
+  "homepage": "https://github.com/osmanemraheroglu/technocore-did-tool#readme",
   "files": [
     "src/",
     "README.md",
+    "TURKCE.md",
     "LICENSE"
   ]
 }

@@ -1,0 +1,19 @@
+# "files" alani zaten bir izin listesidir; bu dosya ikinci bir savunma katmani.
+# Amac: dahil edilen dizinlerin (ornegin src/) icine dusen bir gizli dosyanin
+# pakete girmesini engellemek.
+
+# --- asla yayinlanmaz ---
+secret.key.json
+*.key.json
+*.key
+*.pem
+.env
+.env.*
+public-proof.txt
+
+# --- pakete gereksiz ---
+test/
+.github/
+node_modules/
+.DS_Store
+npm-debug.log*
